@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-
+发货单登记系统 - Streamlit 应用
+· 后台管理系统布局：侧边栏导航 + 顶部标题 + 搜索区 + 数据表格
+· 送货单查询：日历日期选择（有数据日期高亮）+ 日期区间 + 产品材料 + 客户
+· 送货单照片按分单、实物照片按主号上传，照片自动上传七牛云
+· 管理选项：维护客户/材料选项，需密码 888888
 """
 import base64
 import calendar as _cal
@@ -790,16 +794,8 @@ def _download_photos_from_qiniu():
 
 @st.cache_resource(show_spinner=False)
 def _start_photo_sync():
-    """启动时：后台线程先下载七牛照片到本地，再执行双向同步（不阻塞页面渲染）。"""
-    if QN_ENABLED and QINIU_AVAILABLE:
-        import threading
-
-        def _job():
-            # 照片通过七牛 CDN 直连显示，无需下载到本地；仅保留增量上传同步
-            sync_photos_to_qiniu()
-
-        threading.Thread(target=_job, daemon=True).start()
-        return True
+    """照片的上传/删除已在各操作接口即时同步七牛，无需启动后台扫描同步。
+    避免把云端临时磁盘的遗留照片重新上传到七牛（用户已删的照片又回来），也加快冷启动。"""
     return False
 
 # 加载台账（需在侧边栏之前，侧边栏日历会用到）
@@ -1027,12 +1023,12 @@ def render_query_page():
                 with st.container(border=True):
                     st.markdown(f'<div style="font-size:.9rem;font-weight:600;color:#2563eb;margin-bottom:.3rem;">🧾 订单主号：{_pm}　<span style="color:#7a8497;font-weight:400;font-size:.8rem;">选中分单：{_sel_sub or "-"}</span></div>', unsafe_allow_html=True)
                     st.caption(f"{len(_subdf)} 条明细 · 分单：{', '.join(sorted(set(_subdf['送货单号'].astype(str))))}")
-                    # 照片源：云端无本地照片时直连七牛 CDN，本地部署用本地文件
-                    if _local_photo_count() > 0:
+                    # 照片源：配置了七牛则以七牛为权威列出（云端/本地一致，七牛删了立即不显示）；未配置才用本地文件
+                    if QINIU_AVAILABLE:
+                        _dp, _pp = _qiniu_photo_srcs(_pm, _sel_sub)
+                    else:
                         _dp = rg.collect_delivery_photos(PHOTO_ROOT, _pm, _sel_sub) if _sel_sub else []
                         _pp = rg.collect_photos(PHOTO_ROOT, _pm)[1]
-                    else:
-                        _dp, _pp = _qiniu_photo_srcs(_pm, _sel_sub)
                     # 送货单照片：仅显示选中的分单
                     if _sel_sub:
                         show_photo_grid(f"📄 送货单照片 · 分单 {_sel_sub}", _dp, cols=1)
