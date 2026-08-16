@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>中文日期范围</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+         background: transparent; color: #1f2a44; }
+  .range-box { display: inline-flex; align-items: center; gap: 5px; flex-wrap: nowrap; position: relative; }
+  .field { display: inline-flex; align-items: center; gap: 4px;
+           border: 1px solid #d7dce7; border-radius: 8px; padding: 4px 8px;
+           background: #fff; cursor: pointer; font-size: 12.5px; min-height: 34px;
+           white-space: nowrap; box-shadow: none; }
+  .field .lbl, .field .val { white-space: nowrap; }
+  .field:hover { border-color: #2563eb; }
+  .field .lbl { color: #7a8497; font-size: 12px; margin-right: 2px; }
+  .field .val { color: #1f2a44; font-weight: 600; }
+  .arrow { color: #9aa3b5; }
+  .clear-btn { border: none; background: transparent; color: #c0392b; cursor: pointer;
+               font-size: 14px; padding: 2px 4px; border-radius: 4px; }
+  .clear-btn:hover { background: #fdecea; }
+
+  .cal-wrap { position: relative; z-index: 99999; background: #fff; border: 1px solid #e2e6ef;
+              border-radius: 12px; box-shadow: 0 12px 40px rgba(15,23,42,.16);
+              padding: 10px; margin-top: 6px; width: 270px; }
+  .cal-head { display: flex; align-items: center; justify-content: space-between;
+              margin-bottom: 8px; }
+  .cal-head .title { font-size: 13px; font-weight: 700; color: #1f2a44; }
+  .cal-head button { border: 1px solid #e2e6ef; background: #fff; border-radius: 6px;
+                     cursor: pointer; padding: 2px 8px; font-size: 12px; color: #5b6577; }
+  .cal-head button:hover { background: #f3f5fa; }
+  .cal-pane .phead { font-size: 12.5px; font-weight: 600; color: #2563eb;
+                     text-align: center; margin-bottom: 6px; }
+  .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+              font-size: 11px; color: #9aa3b5; text-align: center; margin-bottom: 2px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .cal-cell { text-align: center; font-size: 12px; height: 30px; line-height: 30px;
+              border-radius: 6px; cursor: pointer; color: #3a4356; }
+  .cal-cell:hover { background: #eef3ff; }
+  .cal-cell.empty { cursor: default; }
+  .cal-cell.dim { color: #c3c9d6; }
+  .cal-cell.today { box-shadow: inset 0 0 0 1.5px #2563eb; font-weight: 600; }
+  .cal-cell.sel { background: #2563eb; color: #fff; font-weight: 600; border-radius: 5px; }
+  .cal-cell.in-range { background: #e7efff; }
+  .cal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;
+              padding-top: 8px; border-top: 1px solid #f0f2f7; }
+  .cal-foot button { border-radius: 7px; padding: 5px 14px; font-size: 12.5px;
+                     cursor: pointer; border: 1px solid #e2e6ef; background: #fff; color: #5b6577; }
+  .cal-foot button.primary { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 600; }
+  .cal-foot button.primary:hover { background: #1d4ed8; }
+  .hint { font-size: 11px; color: #9aa3b5; margin-right: auto; padding-left: 4px; }
+</style>
+</head>
+<body>
+  <div class="range-box">
+    <div class="field" id="startField">
+      <span class="lbl">起</span><span class="val" id="startVal">—</span>
+    </div>
+    <span class="arrow">至</span>
+    <div class="field" id="endField">
+      <span class="lbl">止</span><span class="val" id="endVal">—</span>
+    </div>
+    <button class="clear-btn" id="clearBtn" title="重置">✕</button>
+  </div>
+
+  <div class="cal-wrap" id="calWrap" style="display:none;"></div>
+
+  <script>
+    // ---- 精简版 streamlit-component-lib（vanilla） ----
+    var Streamlit = window.Streamlit = {};
+    function post(msg) {
+      msg.isStreamlitMessage = true;
+      window.parent.postMessage(msg, '*');
+    }
+    Streamlit.setComponentReady = function () {
+      post({ type: 'streamlit:componentReady', apiVersion: 1 });
+      Streamlit.setFrameHeight(document.body.scrollHeight);
+    };
+    Streamlit.setFrameHeight = function (height) {
+      post({ type: 'streamlit:setFrameHeight', height: height });
+    };
+    Streamlit.setComponentValue = function (value) {
+      post({ type: 'streamlit:setComponentValue', value: value });
+    };
+    Streamlit.RENDER_EVENT = 'streamlit:render';
+    Streamlit.addEventListener = function (type, cb) {
+      window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (d && d.type === type && d.args !== undefined) {
+          cb({ detail: { args: d.args } });
+        }
+      });
+    };
+
+    // ---- 中文工具 ----
+    var CN = ['一','二','三','四','五','六','日'];
+    function fmt(d){ // ISO yyyy-mm-dd
+      var m = ('0'+(d.getMonth()+1)).slice(-2);
+      var dd = ('0'+d.getDate()).slice(-2);
+      return d.getFullYear()+'-'+m+'-'+dd;
+    }
+    function parse(s){ if(!s) return null; var p=s.split('-'); return new Date(+p[0],+p[1]-1,+p[2]); }
+    function parseISO(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+
+    // ---- 状态 ----
+    var startDate = null, endDate = null;
+    var viewY, viewM; // 当前视图起始月
+    var minDate = null, maxDate = null;
+    var picking = null; // null / 'start' / 'end'
+
+    var startField = document.getElementById('startField');
+    var endField = document.getElementById('endField');
+    var startVal = document.getElementById('startVal');
+    var endVal = document.getElementById('endVal');
+    var clearBtn = document.getElementById('clearBtn');
+    var calWrap = document.getElementById('calWrap');
+
+    function today(){ var t=new Date(); return new Date(t.getFullYear(),t.getMonth(),t.getDate()); }
+
+    function renderFields(){
+      startVal.textContent = startDate ? fmt(startDate) : '选择';
+      endVal.textContent = endDate ? fmt(endDate) : '选择';
+    }
+
+    function monthGrid(base){
+      var y=base.getFullYear(), m=base.getMonth();
+      var first=new Date(y,m,1);
+      var startDow=first.getDay(); // 0=日
+      var days=new Date(y,m+1,0).getDate();
+      var cells='';
+      // 周一开头
+      var offset=(startDow+6)%7;
+      for(var i=0;i<offset;i++) cells+='<div class="cal-cell empty"></div>';
+      for(var d=1; d<=days; d++){
+        var dt=new Date(y,m,d);
+        var iso=fmt(dt);
+        var cls='cal-cell';
+        var minY=minDate?minDate.getTime():-Infinity;
+        var maxY=maxDate?maxDate.getTime():Infinity;
+        if(dt.getTime()<minY || dt.getTime()>maxY) cls+=' dim';
+        if(iso===fmt(today())) cls+=' today';
+        if(startDate && iso===fmt(startDate)) cls+=' sel';
+        if(endDate && iso===fmt(endDate)) cls+=' sel';
+        if(startDate && endDate && dt>startDate && dt<endDate) cls+=' in-range';
+        cells+='<div class="'+cls+'" data-iso="'+iso+'">'+d+'</div>';
+      }
+      return cells;
+    }
+
+    function renderCal(){
+      var base=new Date(viewY, viewM, 1);
+      var next=new Date(viewY, viewM+1, 1);
+      var prev=new Date(viewY, viewM-1, 1);
+      var week='';
+      for(var i=0;i<7;i++) week+='<div>'+CN[i]+'</div>'; // 一 二 三 四 五 六 日
+      var canPrev = !minDate || prev.getTime()>=minDate.getTime();
+      var canNext = !maxDate || next.getTime()<=maxDate.getTime();
+      calWrap.innerHTML =
+        '<div class="cal-head">'+
+          '<button id="prevM" '+(canPrev?'':'disabled')+' style="opacity:'+(canPrev?'1':'.4')+'">◀</button>'+
+          '<div class="title">'+base.getFullYear()+'年 '+(base.getMonth()+1)+'月</div>'+
+          '<button id="nextM" '+(canNext?'':'disabled')+' style="opacity:'+(canNext?'1':'.4')+'">▶</button>'+
+        '</div>'+
+        '<div class="cal-pane"><div class="cal-week">'+week+'</div><div class="cal-grid">'+monthGrid(base)+'</div></div>'+
+        '<div class="cal-foot">'+
+          '<span class="hint">先点开始，再点结束</span>'+
+          '<button id="cancelBtn">取消</button>'+
+          '<button id="okBtn" class="primary">确定</button>'+
+        '</div>';
+      calWrap.style.display='block';
+      var prevEl=document.getElementById('prevM');
+      if(prevEl) prevEl.onclick=function(){ viewY=prev.getFullYear(); viewM=prev.getMonth(); renderCal(); };
+      var nextEl=document.getElementById('nextM');
+      if(nextEl) nextEl.onclick=function(){ viewY=next.getFullYear(); viewM=next.getMonth(); renderCal(); };
+      var cells=calWrap.querySelectorAll('.cal-cell[data-iso]');
+      for(var i=0;i<cells.length;i++){
+        cells[i].onclick=(function(el){
+          return function(){
+            var iso=el.getAttribute('data-iso');
+            var dt=parse(iso);
+            if(minDate&&dt<minDate) return; if(maxDate&&dt>maxDate) return;
+            if(!startDate || (startDate && endDate)){
+              startDate=dt; endDate=null;
+            } else if(!endDate && dt>=startDate){
+              endDate=dt;
+            } else if(!endDate && dt<startDate){
+              startDate=dt; endDate=null;
+            }
+            renderFields(); renderCal();
+          };
+        })(cells[i]);
+      }
+      function closeCal(){
+        calWrap.style.display='none';
+        Streamlit.setFrameHeight(document.body.scrollHeight);
+      }
+      document.getElementById('cancelBtn').onclick=closeCal;
+      document.getElementById('okBtn').onclick=function(){
+        calWrap.style.display='none';
+        Streamlit.setFrameHeight(document.body.scrollHeight);
+        Streamlit.setComponentValue([fmt(startDate), endDate?fmt(endDate):fmt(startDate)]);
+      };
+    }
+
+    startField.onclick=function(){ openCal(); };
+    endField.onclick=function(){ openCal(); };
+    function openCal(){
+      if(!viewY){
+        var t=startDate||endDate||today();
+        viewY=t.getFullYear(); viewM=t.getMonth();
+      }
+      renderCal();
+      Streamlit.setFrameHeight(document.body.scrollHeight);
+    }
+    clearBtn.onclick=function(){
+      startDate=null; endDate=null; renderFields();
+      Streamlit.setComponentValue([null,null]);
+    };
+
+    // ---- 初始化：接收 Python 传来的参数 ----
+    Streamlit.addEventListener(Streamlit.RENDER_EVENT, function(ev){
+      var a=ev.detail.args||{};
+      if(a.min_date){ var md=parse(a.min_date); if(md) minDate=md; }
+      if(a.max_date){ var xd=parse(a.max_date); if(xd) maxDate=xd; }
+      if(a.value && Array.isArray(a.value)){
+        if(a.value[0]) startDate=parse(a.value[0]);
+        if(a.value[1]) endDate=parse(a.value[1]);
+      }
+      renderFields();
+      Streamlit.setFrameHeight(document.body.scrollHeight);
+    });
+
+    Streamlit.setComponentReady();
+
+    // 强制父页面侧边栏始终展开（同源 iframe 可访问 window.parent）
+    (function(){
+      function forceExpand(){
+        try{
+          var w = window.parent;
+          var pd = w.document;
+          // 1) 清除浏览器记忆的侧边栏收起状态
+          var keys = [];
+          try{ keys = Object.keys(w.localStorage); }catch(e){}
+          for(var i=0;i<keys.length;i++){
+            if(keys[i].indexOf('stSidebarCollapsed-')===0){ try{ w.localStorage.removeItem(keys[i]); }catch(e){} }
+          }
+          // 2) 若侧边栏处于收起状态，点击展开按钮
+          var btn = pd.querySelector('[data-testid="stSidebarCollapsedControl"]');
+          if(btn){ btn.click(); }
+          // 3) 强制显示侧边栏
+          var sb = pd.querySelector('[data-testid="stSidebar"]');
+          if(sb){ sb.style.display='block'; sb.style.visibility='visible'; }
+        }catch(e){}
+      }
+      forceExpand();
+      setTimeout(forceExpand, 150);
+      setTimeout(forceExpand, 500);
+      setTimeout(forceExpand, 1200);
+    })();
+  </script>
+</body>
+</html>

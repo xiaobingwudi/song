@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>筛选栏</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+       background:transparent;color:#333c4d;font-size:13px;}
+  .bar{display:flex;align-items:center;gap:14px;flex-wrap:nowrap;position:relative;}
+  .group{display:flex;align-items:center;gap:5px;flex:0 0 auto;}
+  .glabel{font-weight:600;color:#333c4d;white-space:nowrap;font-size:13px;}
+  .hint{color:#9aa3b5;white-space:nowrap;}
+
+  /* 日期字段 */
+  .field{display:flex;flex:1 1 auto;align-items:center;justify-content:center;gap:4px;border:1px solid #d7dce7;border-radius:8px;
+         padding:4px 6px;background:#fff;cursor:pointer;min-height:34px;white-space:nowrap;}
+  .field:hover{border-color:#b9c2d4;}
+  .field .lbl{color:#9aa3b5;font-size:12px;}
+  .field .val{font-weight:600;color:#1f2a44;}
+  .clear{border:none;background:transparent;color:#c0392b;cursor:pointer;font-size:14px;padding:2px 3px;border-radius:4px;flex:0 0 auto;}
+  .clear:hover{background:#fdecea;}
+
+  /* 材料多选 */
+  .multi{position:relative;flex:0 0 auto;}
+  .multi-trigger{display:flex;align-items:center;gap:6px;border:1px solid #d7dce7;border-radius:8px;
+                 padding:5px 10px;background:#fff;cursor:pointer;min-height:34px;white-space:nowrap;
+                 max-width:170px;overflow:hidden;}
+  .multi-trigger .ph{color:#9aa3b5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;}
+  .multi-trigger .sel{color:#1f2a44;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;}
+  .multi-trigger .caret{flex:0 0 auto;color:#666;font-size:11px;}
+  .multi-pop{background:#fff;border:1px solid #e2e6ef;border-radius:10px;
+             box-shadow:0 10px 32px rgba(15,23,42,.14);padding:6px;margin-top:4px;min-width:180px;max-height:200px;overflow:auto;display:none;position:absolute;z-index:999;}
+  .multi-pop label{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;}
+  .multi-pop label:hover{background:#f3f5fa;}
+
+  /* 数量（无加减号，直接输入数字） */
+  .num{display:flex;flex:1 1 auto;align-items:center;border:1px solid #d7dce7;border-radius:8px;
+       background:#fff;padding:0 8px;min-height:34px;}
+  .num input{flex:1 1 auto;width:100%;min-width:0;border:none;outline:none;font-size:13px;text-align:center;color:#1f2a44;background:transparent;}
+
+  /* 操作按钮（重置 / 导出Excel 同权重） */
+  .act{flex:0 0 auto;}
+  .act button{width:100%;border:1px solid #d7dce7;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;
+              font-size:13px;font-weight:600;color:#333c4d;white-space:nowrap;}
+  .act button:hover{border-color:#2563eb;color:#2563eb;background:#f7f9ff;}
+
+  /* 日历 */
+  .cal{position:absolute;top:calc(100% + 4px);left:0;background:#fff;border:1px solid #e2e6ef;border-radius:10px;box-shadow:0 10px 32px rgba(15,23,42,.14);
+       padding:8px;width:264px;display:none;z-index:1000;}
+  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+  .cal-head .tt{font-size:13px;font-weight:700;color:#1f2a44;}
+  .cal-tip{font-size:11.5px;color:#2563eb;font-weight:600;text-align:center;padding:2px 0 6px;border-bottom:1px solid #eef2f8;margin-bottom:6px;}
+  .cal-head button{border:1px solid #e2e6ef;background:#fff;border-radius:6px;cursor:pointer;padding:2px 8px;font-size:12px;color:#5b6577;}
+  .cal-week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:11px;color:#9aa3b5;text-align:center;}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;}
+  .cal-cell{text-align:center;font-size:12px;height:26px;line-height:26px;border-radius:5px;cursor:pointer;color:#3a4356;}
+  .cal-cell:hover{background:#eef3ff;}
+  .cal-cell.empty{cursor:default;}
+  .cal-cell.dim{color:#c3c9d6;}
+  .cal-cell.sel{background:#2563eb;color:#fff;font-weight:600;}
+  .cal-cell.today{box-shadow:inset 0 0 0 1.5px #2563eb;}
+  .cal-cell.in-range{background:#e7efff;}
+  .cal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:8px;padding-top:6px;border-top:1px solid #f0f2f7;}
+  .cal-foot button{border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;border:1px solid #e2e6ef;background:#fff;color:#5b6577;}
+  .cal-foot button.pri{background:#2563eb;color:#fff;border-color:#2563eb;font-weight:600;}
+</style>
+</head>
+<body>
+  <div class="bar" id="bar"></div>
+
+  <script>
+    var Streamlit=window.Streamlit={};
+    function post(m){m.isStreamlitMessage=true;window.parent.postMessage(m,'*');}
+    Streamlit.setComponentReady=function(){post({type:'streamlit:componentReady',apiVersion:1});Streamlit.setFrameHeight(document.body.scrollHeight);};
+    Streamlit.setFrameHeight=function(h){post({type:'streamlit:setFrameHeight',height:h});};
+    Streamlit.setComponentValue=function(v){post({type:'streamlit:setComponentValue',value:v});};
+    Streamlit.RENDER_EVENT='streamlit:render';
+    Streamlit.addEventListener=function(t,cb){window.addEventListener('message',function(e){var d=e.data;if(d&&d.type===t&&d.args!==undefined){cb({detail:{args:d.args}});}});};
+
+    // 状态
+    var st={start:null,end:null,materials:[],qty_min:0,qty_max:0,exportReq:false,exportDone:false};
+    var mats=[];           // 可选材料
+    var WID={};            // 各区块宽度配置(%)
+    var mOpen=false, calOpen=false, calTarget='start';  // calTarget: 当前日历为'start'/'end'哪个框选择
+    var exportData=null, downloadedExport=false;
+    var viewY=null, viewM=null;
+    function gw(k){ return WID[k]?('width:'+WID[k]+'%;'):''; }
+
+    function fmt(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
+    function today(){var t=new Date();return new Date(t.getFullYear(),t.getMonth(),t.getDate());}
+
+    function emit(){
+      Streamlit.setComponentValue({start:st.start,end:st.end,materials:st.materials.slice(),
+        qty_min:st.qty_min,qty_max:st.qty_max,export_requested:st.exportReq,export_done:st.exportDone});
+    }
+    // 动态调整 iframe 高度：浮层（日历/下拉）显示时，把浮层高度计入，避免被裁剪
+    function setH(){
+      var base=document.body.scrollHeight;
+      var cal=document.getElementById('cal');
+      var pop=document.getElementById('mpop');
+      var extra=0;
+      if(cal && cal.style.display==='block'){ extra=Math.max(extra, cal.offsetHeight||0); }
+      if(pop && pop.style.display==='block'){ extra=Math.max(extra, pop.offsetHeight||0); }
+      Streamlit.setFrameHeight(base + extra + 14);
+    }
+
+    // 渲染
+    function render(){
+      document.getElementById('bar').style.gap=((WID['间距']||14)+'px');
+      var h='';
+      // 送货日期
+      h+='<div class="group" style="'+gw('送货日期')+'"><span class="glabel">送货日期</span>';
+      h+='<span class="hint">起</span><div class="field" id="sf"><span class="lbl">起</span><span class="val" id="sv">'+(st.start||'选择')+'</span></div>';
+      h+='<span class="hint">至</span><div class="field" id="ef"><span class="lbl">止</span><span class="val" id="ev">'+(st.end||'选择')+'</span></div>';
+      h+='<button class="clear" id="clr" title="清空日期">×</button></div>';
+      // 产品材料
+      h+='<div class="group" style="'+gw('产品材料')+'"><span class="glabel">产品材料</span>';
+      var mphTxt = st.materials.length ? ('已选 ' + st.materials.length + ' 项') : '请选择材料';
+      var mphCls = st.materials.length ? 'sel' : 'ph';
+      h+='<div class="multi"><div class="multi-trigger" id="mt"><span class="'+mphCls+'" id="mph">'+mphTxt+'</span><span class="caret">▾</span></div>';
+      h+='<div class="multi-pop" id="mpop" style="display:'+(mOpen?'block':'none')+'">';
+      mats.forEach(function(m){h+='<label><input type="checkbox" value="'+m.replace(/"/g,'&quot;')+'"'+(st.materials.indexOf(m)>-1?' checked':'')+'><span>'+m+'</span></label>';});
+      h+='</div></div></div>';
+      // 数量从/到（无加减号，直接输入）
+      h+='<div class="group" style="'+gw('数量从')+'"><span class="glabel">数量从</span><div class="num"><input id="qmin" type="text" inputmode="numeric" value="'+st.qty_min+'"></div></div>';
+      h+='<div class="group" style="'+gw('数量到')+'"><span class="glabel">数量到</span><div class="num"><input id="qmax" type="text" inputmode="numeric" value="'+st.qty_max+'"></div></div>';
+      // 重置 + 导出Excel（同一体系、同权重）
+      h+='<div class="act" style="'+gw('重置')+'"><button id="rst">重置</button></div>';
+      h+='<div class="act" style="'+gw('导出Excel')+'"><button id="exp">导出Excel</button></div>';
+      // 日历（隐藏，点击日期字段展开）
+      h+='<div class="cal" id="cal"></div>';
+      document.getElementById('bar').innerHTML=h;
+
+      // 收到 Python 生成的 xlsx(base64) → 触发浏览器下载
+      if(exportData && !downloadedExport){
+        downloadedExport=true;
+        try{
+          var bin=atob(exportData),bytes=new Uint8Array(bin.length);
+          for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+          var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+          var url=URL.createObjectURL(blob);
+          var link=document.createElement('a');
+          link.href=url;link.download='送货单查询.xlsx';
+          document.body.appendChild(link);link.click();
+          document.body.removeChild(link);
+          setTimeout(function(){URL.revokeObjectURL(url);},1000);
+          st.exportReq=false;st.exportDone=true;emit();
+        }catch(e){st.exportReq=false;st.exportDone=false;emit();}
+      }
+      if(calOpen){ drawCal(); document.getElementById('cal').style.display='block'; }
+      setH();
+    }
+
+    function updateMatLabel(){
+      var ph=document.getElementById('mph');
+      if(st.materials.length===0){ph.className='ph';ph.textContent='请选择材料';}
+      else{ph.className='sel';ph.textContent=st.materials.join('、');}
+    }
+
+    // 日历：target='start' 设为起始，'end' 设为结束
+    function openCal(target){
+      calOpen=true;
+      calTarget=target||'start';
+      if(viewY===null){
+        var base = calTarget==='start' ? st.start : st.end;
+        var t = base ? new Date(base) : today();
+        viewY=t.getFullYear(); viewM=t.getMonth();
+      }
+      drawCal();
+      document.getElementById('cal').style.display='block';
+      setTimeout(setH,30);
+    }
+    function closeCal(){ calOpen=false; var c=document.getElementById('cal'); if(c)c.style.display='none'; setTimeout(setH,30); }
+    function setPop(){ var p=document.getElementById('mpop'); if(p)p.style.display=mOpen?'block':'none'; setTimeout(setH,30); }
+
+    function drawCal(){
+      var base=new Date(viewY,viewM,1),prev=new Date(viewY,viewM-1,1),next=new Date(viewY,viewM+1,1);
+      var week='';for(var i=0;i<7;i++)week+='<div>'+['一','二','三','四','五','六','日'][i]+'</div>';
+      var grid='';
+      var first=new Date(viewY,viewM,1),days=new Date(viewY,viewM+1,0).getDate();
+      var offset=(first.getDay()+6)%7;
+      for(var i=0;i<offset;i++)grid+='<div class="cal-cell empty"></div>';
+      for(var d=1;d<=days;d++){
+        var dt=new Date(viewY,viewM,d),iso=fmt(dt),cls='cal-cell';
+        if(iso===fmt(today()))cls+=' today';
+        if(st.start&&iso===st.start)cls+=' sel';
+        if(st.end&&iso===st.end)cls+=' sel';
+        if(st.start&&st.end&&dt>new Date(st.start)&&dt<new Date(st.end))cls+=' in-range';
+        grid+='<div class="'+cls+'" data-iso="'+iso+'">'+d+'</div>';
+      }
+      document.getElementById('cal').innerHTML=
+        '<div class="cal-head"><button id="pm">◀</button><span class="tt">'+viewY+'年 '+(viewM+1)+'月</span><button id="nm">▶</button></div>'+
+        '<div class="cal-tip">'+(calTarget==='start'?'正在选择：起始日期':'正在选择：结束日期')+'</div>'+
+        '<div class="cal-week">'+week+'</div><div class="cal-grid">'+grid+'</div>'+
+        '<div class="cal-foot"><button id="calclr">清空</button><button class="pri" id="calok">确定</button></div>';
+    }
+
+    // ---- 事件委托（只在脚本启动时绑定一次，避免重复绑定导致的交互失效）----
+    var bar=document.getElementById('bar');
+
+    bar.addEventListener('click', function(e){
+      var t=e.target;
+      // 日历内部操作
+      if(calOpen && document.getElementById('cal') && document.getElementById('cal').contains(t)){
+        if(t.closest('#pm')){viewM--;if(viewM<0){viewM=11;viewY--;}drawCal();}
+        else if(t.closest('#nm')){viewM++;if(viewM>11){viewM=0;viewY++;}drawCal();}
+        else if(t.closest('#calclr')){st.start=null;st.end=null;render();emit();}
+        else if(t.closest('#calok')){if(!st.end)st.end=st.start;closeCal();render();emit();}
+        else if(t.closest('.cal-cell[data-iso]')){
+          // 独立选择：点“起”框设起始，点“止”框设结束；选完即生效并关闭日历
+          var iso=t.closest('.cal-cell').getAttribute('data-iso');
+          if(calTarget==='start'){ st.start=iso; }
+          else{ st.end=iso; }
+          closeCal();
+          render(); emit();
+        }
+        return;
+      }
+      // 日期清空
+      if(t.closest('#clr')){st.start=null;st.end=null;render();emit();return;}
+      // 日期字段：打开日历（起始/结束各自独立选择）
+      if(t.closest('#sf')){openCal('start');return;}
+      if(t.closest('#ef')){openCal('end');return;}
+      // 其他点击：关闭日历
+      if(calOpen){closeCal();}
+      // 材料下拉：切换展开
+      if(t.closest('#mt')){mOpen=!mOpen;setPop();return;}
+      if(t.closest('#mpop')){return;}   // 勾选由 change 事件处理，点击不关闭
+      // 点击非 pop 区域：关闭材料下拉
+      if(mOpen){mOpen=false;setPop();}
+      // 重置
+      if(t.closest('#rst')){st.materials=[];st.qty_min=0;st.qty_max=0;render();emit();return;}
+      // 导出Excel
+      if(t.closest('#exp')){st.exportReq=true;emit();return;}
+    });
+
+    // 材料勾选
+    bar.addEventListener('change', function(e){
+      var cb=e.target;
+      if(cb && cb.matches && cb.matches('#mpop input[type=checkbox]')){
+        var v=cb.value;
+        if(cb.checked){ if(st.materials.indexOf(v)<0) st.materials.push(v); }
+        else{ st.materials=st.materials.filter(function(x){return x!==v;}); }
+        // 勾选后自动收起下拉，避免固定展开
+        mOpen=false; setPop();
+        updateMatLabel(); emit();
+      }
+      // 数量：失焦/回车时提交（输入过程不打断）
+      if(cb && cb.id && (cb.id==='qmin'||cb.id==='qmax')){ emit(); }
+    });
+
+    // 数量输入（本地更新，不即时 rerun，避免打断输入）
+    bar.addEventListener('input', function(e){
+      var inp=e.target;
+      if(inp && inp.id==='qmin'){ st.qty_min=parseInt(inp.value||'0',10); if(isNaN(st.qty_min))st.qty_min=0; }
+      else if(inp && inp.id==='qmax'){ st.qty_max=parseInt(inp.value||'0',10); if(isNaN(st.qty_max))st.qty_max=0; }
+    });
+
+    Streamlit.addEventListener(Streamlit.RENDER_EVENT,function(ev){
+      var a=ev.detail.args||{};
+      if(a.widths)WID=a.widths;
+      mats=(a.materials||[]).slice();
+      exportData=a.export_data||null;
+      if(a.value){
+        if(a.value.start)st.start=a.value.start;
+        if(a.value.end)st.end=a.value.end;
+        if(a.value.materials)st.materials=a.value.materials.slice();
+        if(a.value.qty_min!==undefined)st.qty_min=a.value.qty_min;
+        if(a.value.qty_max!==undefined)st.qty_max=a.value.qty_max;
+      }
+      render();
+    });
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>

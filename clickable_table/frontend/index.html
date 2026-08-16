@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>送货单表格</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;background:transparent;}
+  .wrap{overflow:auto;max-height:600px;border:1px solid #e7eaf1;border-radius:10px;}
+  table{border-collapse:collapse;width:100%;font-size:13px;color:#1f2a44;}
+  thead th{position:sticky;top:0;background:#f1f4fb;color:#5b6577;font-size:12px;font-weight:600;
+           padding:7px 9px;text-align:left;border-bottom:1px solid #e2e6ef;white-space:nowrap;z-index:2;}
+  tbody td{padding:5px 9px;border-bottom:1px solid #f0f2f7;white-space:nowrap;height:19px;line-height:19px;}
+  /* 0.5cm ≈ 19px 行高 + 斑马纹（浅红 / 白） */
+  tbody tr:nth-child(even){background:#fdecec;}
+  tbody tr:nth-child(odd){background:#ffffff;}
+  tbody tr:hover{background:#eef3ff;cursor:pointer;}
+  tbody tr.sel{background:#dce9ff;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;}
+  .hint{font-size:11px;color:#9aa3b5;margin-top:4px;}
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap"></div>
+  <div class="hint">点击行可联动查看送货单 / 实物照片</div>
+
+  <script>
+    // ---- 精简版 streamlit-component-lib ----
+    var Streamlit = window.Streamlit = {};
+    function post(msg){ msg.isStreamlitMessage=true; window.parent.postMessage(msg,'*'); }
+    Streamlit.setComponentReady=function(){ post({type:'streamlit:componentReady',apiVersion:1}); Streamlit.setFrameHeight(document.body.scrollHeight); };
+    Streamlit.setFrameHeight=function(h){ post({type:'streamlit:setFrameHeight',height:h}); };
+    Streamlit.setComponentValue=function(v){ post({type:'streamlit:setComponentValue',value:v}); };
+    Streamlit.RENDER_EVENT='streamlit:render';
+    Streamlit.addEventListener=function(t,cb){ window.addEventListener('message',function(e){ var d=e.data; if(d&&d.type===t&&d.args!==undefined){ cb({detail:{args:d.args}}); } }); };
+
+    var cols=[], rows=[];
+    function esc(s){
+      return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    function render(){
+      var html='<table><thead><tr>';
+      cols.forEach(function(c){ html+='<th>'+esc(c)+'</th>'; });
+      html+='</tr></thead><tbody>';
+      rows.forEach(function(r,i){
+        html+='<tr data-i="'+i+'" data-main="'+esc(r.main)+'" data-sub="'+esc(r.sub)+'">';
+        r.cells.forEach(function(cell,j){
+          var cls=(cols[j]&&/数量|合计/.test(cols[j]))?'num':'';
+          html+='<td class="'+cls+'">'+esc(cell)+'</td>';
+        });
+        html+='</tr>';
+      });
+      html+='</tbody></table>';
+      document.getElementById('wrap').innerHTML=html;
+      // 行点击
+      document.querySelectorAll('tbody tr').forEach(function(tr){
+        tr.addEventListener('click',function(){
+          document.querySelectorAll('tbody tr').forEach(function(x){x.classList.remove('sel');});
+          tr.classList.add('sel');
+          Streamlit.setComponentValue({main:tr.dataset.main, sub:tr.dataset.sub});
+        });
+      });
+      Streamlit.setFrameHeight(document.body.scrollHeight);
+    }
+
+    Streamlit.addEventListener(Streamlit.RENDER_EVENT, function(ev){
+      var a=ev.detail.args||{};
+      cols=(a.columns||[]).slice();
+      rows=(a.rows||[]).slice();
+      render();
+    });
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>
