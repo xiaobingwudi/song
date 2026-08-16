@@ -417,6 +417,7 @@ def _remote_to_data_url(url):
     return None
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _qiniu_photo_srcs(main_no, sub_no=None):
     """从七牛云列出某订单主号下的照片 CDN URL（直连显示，无需下载到本地）。
     返回 (送货单照片URL列表[(url,name)], 实物照片URL列表[(url,name)])。
@@ -484,7 +485,7 @@ def _qiniu_photo_items(main_no):
 
 
 def _delete_photo_item(key, local_path=None):
-    """删除照片：同步删除七牛对象 + 本地缓存文件。"""
+    """删除照片：同步删除七牛对象 + 本地缓存文件，并清除照片目录缓存。"""
     if key and QN_ENABLED and QINIU_AVAILABLE:
         try:
             qn.delete_from_qiniu(key, QN_AK, QN_SK, QN_BUCKET)
@@ -495,6 +496,10 @@ def _delete_photo_item(key, local_path=None):
             os.remove(local_path)
         except Exception:
             pass
+    try:
+        _qiniu_photo_srcs.clear()
+    except Exception:
+        pass
 
 
 def _disp_bytes(disp):
@@ -559,9 +564,10 @@ def show_photo_grid(title, photos, cols=4):
     st.components.v1.html(html, height=height)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def load_options():
     default = {"customers": [], "materials": [], "visitor_password": "666666", "page_size": 30}
-    # 优先从七牛云同步选项配置（含访客密码），本地作为缓存
+    # 优先从七牛云同步选项配置（含访客密码），本地作为缓存；60 秒内不重复下载，避免每次交互都发起网络请求
     if QN_ENABLED and QINIU_AVAILABLE:
         try:
             qn.download_from_qiniu(QN_OPTIONS_KEY, OPTIONS_PATH, QN_AK, QN_SK, QN_DOMAIN)
@@ -585,6 +591,10 @@ def save_options(opts):
         json.dump(opts, f, ensure_ascii=False, indent=2)
     if QN_ENABLED and QINIU_AVAILABLE:
         qn.upload_to_qiniu(OPTIONS_PATH, QN_OPTIONS_KEY, QN_AK, QN_SK, QN_BUCKET, QN_DOMAIN)
+    try:
+        load_options.clear()   # 保存后清除缓存，下次读取立即生效
+    except Exception:
+        pass
 
 def get_visitor_password():
     return str(load_options().get("visitor_password", "666666"))
