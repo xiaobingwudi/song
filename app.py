@@ -15,8 +15,11 @@ import os
 import re
 import shutil
 import time
+import urllib.parse
 from datetime import date, datetime
 from pathlib import Path
+
+import requests
 
 import pandas as pd
 import streamlit as st
@@ -129,13 +132,20 @@ QN_OPTIONS_KEY = "ledger/options.json"  # 选项配置（含访客密码）在�
 ADMIN_PASSWORD = _cfg("ADMIN_PASSWORD", "888888")  # 云端务必通过 Secrets 配置，勿用默认值
 VISITOR_PASSWORD = _cfg("VISITOR_PASSWORD", "666666")  # 云端务必通过 Secrets 配置
 
-QINIU_AVAILABLE = False
+# 七牛状态：库是否安装 / 密钥是否配置 / 是否完全可用（两条件都满足）
+QINIU_LIB = False
 try:
     import qiniu  # noqa
-    if QN_AK and QN_SK and QN_BUCKET and QN_DOMAIN:
-        QINIU_AVAILABLE = True
+    QINIU_LIB = True
 except ImportError:
-    QINIU_AVAILABLE = False
+    QINIU_LIB = False
+QINIU_CONFIGURED = bool(QN_AK and QN_SK and QN_BUCKET and QN_DOMAIN)
+QINIU_AVAILABLE = QINIU_LIB and QINIU_CONFIGURED
+QINIU_HINT = (
+    "" if QINIU_AVAILABLE
+    else ("⚠ 未配置七牛密钥，请在 Streamlit Settings→Secrets 填写 QN_AK/QN_SK 等" if QINIU_CONFIGURED is False and QINIU_LIB
+          else ("⚠ 未安装 qiniu 库（requirements.txt 已含，请确认安装）" if QINIU_CONFIGURED else "⚠ 未安装 qiniu 库且未配置密钥"))
+)
 
 
 _GLOBAL_CSS = """<style>
@@ -392,14 +402,76 @@ _PHOTO_GRID_HTML = """<style>
 </script>"""
 
 
+def _remote_to_data_url(url):
+    """后端代理：拉取七牛 CDN 图片（http）转为 data URL 返回。
+    规避 Streamlit Cloud https 页面加载 http 图片被浏览器拦截（mixed content）。
+    按需拉取当前查看的一张，带内存缓存，不启动全量下载。"""
+    if url in _IMG_CACHE:
+        return _IMG_CACHE[url]
+    try:
+        r = requests.get(url, timeout=12)
+        if r.status_code == 200 and r.content:
+            b64 = base64.b64encode(r.content).decode()
+            mime = r.headers.get("Content-Type", "image/jpeg") or "image/jpeg"
+            data = f"data:{mime};base64,{b64}"
+            _IMG_CACHE[url] = data
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _qiniu_photo_srcs(main_no, sub_no=None):
+    """从七牛云列出某订单主号下的照片 CDN URL（直连显示，无需下载到本地）。
+    返回 (送货单照片URL列表[(url,name)], 实物照片URL列表[(url,name)])。
+    仅用于云端无本地照片时直连七牛；本地部署仍用本地文件。"""
+    domain = QN_DOMAIN.rstrip("/")
+    if not domain.startswith(("http://", "https://")):
+        domain = "http://" + domain
+    delivery, physical = [], []
+    if not (QN_ENABLED and QINIU_AVAILABLE):
+        return delivery, physical
+    try:
+        keys = qn.list_files(f"photos/{main_no}/", QN_AK, QN_SK, QN_BUCKET)
+        keys += qn.list_files(f"{main_no}/", QN_AK, QN_SK, QN_BUCKET)  # 旧版无 photos/ 前缀
+        for k in keys:
+            name = k.split("/")[-1]
+            if not name.lower().endswith(rg.IMG_EXT):
+                continue
+            url = f"{domain}/{urllib.parse.quote(k)}"
+            if sub_no and f"/送货单照片/{sub_no}/" in k:
+                delivery.append((url, name))
+            elif "/实物照片/" in k:
+                physical.append((url, name))
+        # 送货单：若指定分单无子目录，回退到主号下全部送货单照片
+        if sub_no and not delivery:
+            for k in keys:
+                name = k.split("/")[-1]
+                if "/送货单照片/" in k and name.lower().endswith(rg.IMG_EXT):
+                    delivery.append((f"{domain}/{urllib.parse.quote(k)}", name))
+        return delivery, physical
+    except Exception:
+        return [], []
+
+
 def show_photo_grid(title, photos, cols=4):
     """图片网格 + 可拖动可缩放浮窗查看。点击缩略图打开浮窗；滚轮缩放、拖动图片平移、拖标题栏移动浮窗。"""
     st.markdown(f"**{title}（{len(photos)} 张）**")
     if not photos:
         st.caption("（暂无照片）")
         return
-    items = [(img_to_data_url(p), Path(p).name) for p in photos]
-    items = [(u, n) for u, n in items if u]
+    items = []
+    for p in photos:
+        if isinstance(p, (tuple, list)):
+            src, name = p[0], p[1]
+        else:
+            src, name = p, Path(p).name
+        if isinstance(src, str) and src.startswith("http"):  # 七牛 CDN URL → 后端代理拉取
+            src = _remote_to_data_url(src)
+        elif isinstance(src, str) and os.path.exists(src):  # 本地文件 → 转 data URL
+            src = img_to_data_url(src)
+        if src:
+            items.append((src, name))
     if not items:
         st.caption("（暂无照片）")
         return
@@ -636,11 +708,15 @@ def _download_photos_from_qiniu():
 
 @st.cache_resource(show_spinner=False)
 def _start_photo_sync():
-    """启动时：先从七牛拉取照片到本地，再启动双向同步后台线程（仅一次）。"""
+    """启动时：后台线程先下载七牛照片到本地，再执行双向同步（不阻塞页面渲染）。"""
     if QN_ENABLED and QINIU_AVAILABLE:
         import threading
-        _download_photos_from_qiniu()
-        threading.Thread(target=sync_photos_to_qiniu, daemon=True).start()
+
+        def _job():
+            # 照片通过七牛 CDN 直连显示，无需下载到本地；仅保留增量上传同步
+            sync_photos_to_qiniu()
+
+        threading.Thread(target=_job, daemon=True).start()
         return True
     return False
 
@@ -661,7 +737,7 @@ with st.sidebar:
     _role_html = ('<span class="side-badge side-badge-admin">管理员</span>' if st.session_state.role == "admin"
                   else '<span class="side-badge side-badge-visitor">访客</span>')
     _qn_html = ('<span class="side-badge side-badge-qn">七牛云已启用</span>' if QINIU_AVAILABLE
-                else '<span class="side-badge side-badge-qn-warn">⚠ 未安装 qiniu 库</span>')
+                else f'<span class="side-badge side-badge-qn-warn">{QINIU_HINT}</span>')
     _sync = ""
     if QN_ENABLED and QINIU_AVAILABLE:
         _start_photo_sync()
@@ -869,12 +945,16 @@ def render_query_page():
                 with st.container(border=True):
                     st.markdown(f'<div style="font-size:.9rem;font-weight:600;color:#2563eb;margin-bottom:.3rem;">🧾 订单主号：{_pm}　<span style="color:#7a8497;font-weight:400;font-size:.8rem;">选中分单：{_sel_sub or "-"}</span></div>', unsafe_allow_html=True)
                     st.caption(f"{len(_subdf)} 条明细 · 分单：{', '.join(sorted(set(_subdf['送货单号'].astype(str))))}")
+                    # 照片源：云端无本地照片时直连七牛 CDN，本地部署用本地文件
+                    if _local_photo_count() > 0:
+                        _dp = rg.collect_delivery_photos(PHOTO_ROOT, _pm, _sel_sub) if _sel_sub else []
+                        _pp = rg.collect_photos(PHOTO_ROOT, _pm)[1]
+                    else:
+                        _dp, _pp = _qiniu_photo_srcs(_pm, _sel_sub)
                     # 送货单照片：仅显示选中的分单
                     if _sel_sub:
-                        _dp = rg.collect_delivery_photos(PHOTO_ROOT, _pm, _sel_sub)
                         show_photo_grid(f"📄 送货单照片 · 分单 {_sel_sub}", _dp, cols=1)
                     # 实物照片：按订单主号全部显示
-                    _pp = rg.collect_photos(PHOTO_ROOT, _pm)[1]
                     show_photo_grid(f"📦 实物照片 · {_pm}", _pp, cols=4)
                     if st.button("🗕 收起照片", use_container_width=True):
                         st.session_state.photo_open = False
@@ -992,7 +1072,7 @@ def render_upload_page():
                         _all_ok = True
                         if QN_ENABLED and not QINIU_AVAILABLE:
                             _all_ok = False
-                            st.session_state["upload_success_msg"] = f"⚠️ {_msg}；未安装 qiniu 库，照片未上传七牛云（请 pip install qiniu）"
+                            st.session_state["upload_success_msg"] = f"⚠️ {_msg}；{QINIU_HINT or '七牛未启用'}，照片未上传七牛云"
                         elif QN_ENABLED:
                             _all_ok = (up_fail == 0)
                             if _all_ok:
