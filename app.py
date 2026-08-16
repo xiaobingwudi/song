@@ -1,10 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-发货单登记系统 - Streamlit 应用
-· 后台管理系统布局：侧边栏导航 + 顶部标题 + 搜索区 + 数据表格
-· 送货单查询：日历日期选择（有数据日期高亮）+ 日期区间 + 产品材料 + 客户
-· 送货单照片按分单、实物照片按主号上传，照片自动上传七牛云
-· 管理选项：维护客户/材料选项，需密码 888888
+
 """
 import base64
 import calendar as _cal
@@ -452,6 +448,82 @@ def _qiniu_photo_srcs(main_no, sub_no=None):
         return delivery, physical
     except Exception:
         return [], []
+
+
+def _qiniu_photo_items(main_no):
+    """以七牛为权威源列出某订单主号下的全部照片。
+    返回 (送货单照片列表[(key,display,name)], 实物照片列表[(key,display,name)])。
+    key=七牛对象名（用于删除）；display=可显示源（本地路径或后端代理 data URL）；name=文件名。
+    未启用七牛时回退本地扫描。"""
+    if not (QN_ENABLED and QINIU_AVAILABLE):
+        dl, pp = rg.collect_photos(PHOTO_ROOT, main_no)
+        delivery = [(os.path.relpath(p, DATA_DIR).replace(os.sep, "/"), p, os.path.basename(p)) for p in dl]
+        physical = [(os.path.relpath(p, DATA_DIR).replace(os.sep, "/"), p, os.path.basename(p)) for p in pp]
+        return delivery, physical
+    domain = QN_DOMAIN.rstrip("/")
+    if not domain.startswith(("http://", "https://")):
+        domain = "http://" + domain
+    delivery, physical = [], []
+    try:
+        keys = qn.list_files(f"photos/{main_no}/", QN_AK, QN_SK, QN_BUCKET)
+        keys += qn.list_files(f"{main_no}/", QN_AK, QN_SK, QN_BUCKET)  # 旧版无 photos/ 前缀
+        for k in keys:
+            name = k.split("/")[-1]
+            if not name.lower().endswith(rg.IMG_EXT):
+                continue
+            url = f"{domain}/{urllib.parse.quote(k)}"
+            display = _remote_to_data_url(url) or url
+            item = (k, display, name)
+            if "/实物照片/" in k:
+                physical.append(item)
+            elif "/送货单照片/" in k:
+                delivery.append(item)
+        return delivery, physical
+    except Exception:
+        return [], []
+
+
+def _delete_photo_item(key, local_path=None):
+    """删除照片：同步删除七牛对象 + 本地缓存文件。"""
+    if key and QN_ENABLED and QINIU_AVAILABLE:
+        try:
+            qn.delete_from_qiniu(key, QN_AK, QN_SK, QN_BUCKET)
+        except Exception:
+            pass
+    if local_path and os.path.exists(local_path):
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
+
+
+def _disp_bytes(disp):
+    """把 data URL 显示源转为 bytes（供 st.image 使用）；本地路径返回 None。"""
+    if isinstance(disp, str) and disp.startswith("data:") and "," in disp:
+        try:
+            return base64.b64decode(disp.split(",", 1)[1])
+        except Exception:
+            return None
+    return None
+
+
+def _show_mgmt_photo(disp, width=170):
+    """在数据管理页显示一张照片：data URL 转 bytes，本地路径直接读。"""
+    b = _disp_bytes(disp)
+    if b is not None:
+        st.image(b, width=width)
+    elif isinstance(disp, str) and os.path.exists(disp):
+        st.image(disp, width=width)
+
+
+def _qiniu_upload(local_path):
+    """上传照片到七牛（key=相对 DATA_DIR 的路径），供上传后即时同步。"""
+    if local_path and os.path.exists(local_path) and QN_ENABLED and QINIU_AVAILABLE:
+        rel = os.path.relpath(local_path, DATA_DIR).replace(os.sep, "/")
+        try:
+            qn.upload_to_qiniu(local_path, rel, QN_AK, QN_SK, QN_BUCKET, QN_DOMAIN)
+        except Exception:
+            pass
 
 
 def show_photo_grid(title, photos, cols=4):
@@ -1378,7 +1450,7 @@ def render_data_mgmt_page():
                 else:
                     st.warning(f"未找到送货单号对应的订单：{_m2}")
 
-            _dp, _pp = rg.collect_photos(PHOTO_ROOT, _mn)
+            _dp, _pp = _qiniu_photo_items(_mn)   # 以七牛为权威源列出照片
             _subs = sorted(set(df_all.loc[df_all["订单主号"].astype(str) == _mn, "送货单号"].astype(str)))
             # ---- 订单概览卡片 ----
             st.markdown(
@@ -1391,17 +1463,17 @@ def render_data_mgmt_page():
             st.markdown("#### 🧾 送货单照片")
             st.caption("每个分单对应一张送货单底单。上传新照片会覆盖该分单原有的送货单照片。")
             for _sub in _subs:
-                _dps = rg.collect_delivery_photos(PHOTO_ROOT, _mn, _sub)
+                _dps = [it for it in _dp if f"/送货单照片/{_sub}/" in it[0]]
                 st.markdown(f"**分单 {_sub}**")
                 if _dps:
-                    for _j, _p in enumerate(_dps):
+                    for _j, (_k, _disp, _nm) in enumerate(_dps):
                         _dc1, _dc2 = st.columns([5, 1])
                         with _dc1:
-                            st.image(_p, width=200)
+                            _show_mgmt_photo(_disp, 200)
+                            st.caption(_nm)
                         with _dc2:
-                            if st.button("🗑 删除", key=f"del_dp_{_sub}_{_j}"):
-                                if os.path.exists(_p):
-                                    os.remove(_p)
+                            if st.button("🗑 删除", key=f"del_dp_{_sub}_{_j}_{_nm}"):
+                                _delete_photo_item(_k, os.path.join(DATA_DIR, *_k.split("/")))
                                 _refresh_photo_cols(_mn)
                                 st.success(f"已删除送货单照片（分单 {_sub}）")
                                 st.rerun()
@@ -1413,16 +1485,16 @@ def render_data_mgmt_page():
                 if _up is not None:
                     _folder = os.path.join(PHOTO_ROOT, _mn, rg.DELIVERY_PHOTO_DIR, _sub)
                     os.makedirs(_folder, exist_ok=True)
-                    # 重新上传覆盖：先删除该分单现有的送货单照片
-                    for _old in rg.collect_delivery_photos(PHOTO_ROOT, _mn, _sub):
-                        if os.path.exists(_old):
-                            os.remove(_old)
+                    # 重新上传覆盖：先删除该分单现有的送货单照片（七牛 + 本地）
+                    for _old in [it for it in _dp if f"/送货单照片/{_sub}/" in it[0]]:
+                        _delete_photo_item(_old[0], os.path.join(DATA_DIR, *_old[0].split("/")))
                     _ext = os.path.splitext(_up.name)[1].lower() or ".jpg"
                     if _ext not in rg.IMG_EXT:
                         _ext = ".jpg"
                     _dest = os.path.join(_folder, f"送货单底单{_ext}")
                     with open(_dest, "wb") as _fo:
                         _fo.write(_up.getbuffer())
+                    _qiniu_upload(_dest)   # 即时同步到七牛
                     _refresh_photo_cols(_mn)
                     st.success(f"已上传送货单照片到分单 {_sub}")
                     st.rerun()
@@ -1432,12 +1504,12 @@ def render_data_mgmt_page():
             st.caption("实物照片属于整个订单。可上传多张，删除或替换其中任意一张。")
             if _pp:
                 _pc = st.columns(4)
-                for _i, _p in enumerate(_pp):
+                for _i, (_k, _disp, _nm) in enumerate(_pp):
                     with _pc[_i % 4]:
-                        st.image(_p, width=170)
-                        if st.button("🗑 删除", key=f"del_pp_{_i}"):
-                            if os.path.exists(_p):
-                                os.remove(_p)
+                        _show_mgmt_photo(_disp, 170)
+                        st.caption(_nm)
+                        if st.button("🗑 删除", key=f"del_pp_{_i}_{_nm}"):
+                            _delete_photo_item(_k, os.path.join(DATA_DIR, *_k.split("/")))
                             _refresh_photo_cols(_mn)
                             st.success("已删除一张实物照片")
                             st.rerun()
@@ -1456,6 +1528,7 @@ def render_data_mgmt_page():
                     _dest = os.path.join(_folder, f"实物_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_n+1}{_ext}")
                     with open(_dest, "wb") as _fo:
                         _fo.write(_f.getbuffer())
+                    _qiniu_upload(_dest)   # 即时同步到七牛
                     _n += 1
                 _refresh_photo_cols(_mn)
                 st.success(f"✅ 已上传 {_n} 张实物照片到订单 {_mn}")
