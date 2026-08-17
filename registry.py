@@ -62,6 +62,21 @@ def collect_delivery_photos(photo_root, main_no, sub_no):
     return _list_imgs(folder)
 
 
+def build_product_name(it):
+    """产品名称 = 材料名称 + 颜色 + 备注（无分隔连写，空字段自动跳过）。
+    若三字段全空则回退上传表中的“产品名称”列，避免名称为空。"""
+    parts = [
+        str(it.get("材料名称", "") or "").strip(),
+        str(it.get("颜色", "") or "").strip(),
+        str(it.get("备注", "") or "").strip(),
+    ]
+    parts = [p for p in parts if p]
+    name = "".join(parts)
+    if name:
+        return name
+    return str(it.get("产品名称", "") or "").strip()
+
+
 def compute_material(material, package):
     """
     生成"产品材料"标签。
@@ -141,7 +156,7 @@ def notes_to_ledger(notes, photo_root=""):
                 "客户名称": customer,
                 "送货时间": date,
                 "产品材料": compute_material(it.get("材料名称"), it.get("包装")),
-                "产品名称": str(it.get("产品名称", "") or "").strip(),
+                "产品名称": build_product_name(it),
                 "产品规格": str(it.get("产品规格", "") or "").strip(),
                 "数量": qty,
                 "单位": it.get("单位", ""),
