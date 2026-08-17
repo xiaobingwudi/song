@@ -281,24 +281,37 @@ def _page_head(title, sub):
             f'<h1 style="margin:0;font-size:1.28rem;color:#1f2a44;">{title}</h1>'
             f'<span style="color:#7a8497;font-size:.8rem;">{sub}</span></div>')
 
-def img_to_data_url(ref):
+def img_to_data_url(ref, max_w=None):
+    """本地图片转 data URL；max_w 指定时压缩宽度生成缩略图（加载快），否则原图。"""
     if not ref:
         return ""
     ref = str(ref)
     if ref.startswith("http://") or ref.startswith("https://") or ref.startswith("data:"):
         return ref
-    if ref in _IMG_CACHE:
-        return _IMG_CACHE[ref]
+    ckey = ref if not max_w else f"{ref}::w{max_w}"
+    if ckey in _IMG_CACHE:
+        return _IMG_CACHE[ckey]
     if not os.path.exists(ref):
         return ""
     try:
-        with open(ref, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        ext = os.path.splitext(ref)[1].lower().lstrip(".")
-        mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
-                "bmp": "bmp", "webp": "webp"}.get(ext, "jpeg")
-        url = f"data:image/{mime};base64,{b64}"
-        _IMG_CACHE[ref] = url
+        if max_w:
+            from PIL import Image
+            im = Image.open(ref)
+            w, h = im.size
+            if w > max_w:
+                im = im.resize((max_w, int(h * max_w / w)), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=80)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            url = f"data:image/jpeg;base64,{b64}"
+        else:
+            with open(ref, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            ext = os.path.splitext(ref)[1].lower().lstrip(".")
+            mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
+                    "bmp": "bmp", "webp": "webp"}.get(ext, "jpeg")
+            url = f"data:image/{mime};base64,{b64}"
+        _IMG_CACHE[ckey] = url
         return url
     except Exception:
         return ""
@@ -402,19 +415,32 @@ _PHOTO_GRID_HTML = """<style>
 </script>"""
 
 
-def _remote_to_data_url(url):
+def _remote_to_data_url(url, max_w=None):
     """后端代理：拉取七牛 CDN 图片（http）转为 data URL 返回。
     规避 Streamlit Cloud https 页面加载 http 图片被浏览器拦截（mixed content）。
-    按需拉取当前查看的一张，带内存缓存，不启动全量下载。"""
-    if url in _IMG_CACHE:
-        return _IMG_CACHE[url]
+    按需拉取当前查看的一张，带内存缓存，不启动全量下载。
+    max_w 指定时压缩宽度生成缩略图（加载快），否则返回原图。"""
+    ckey = url if not max_w else f"{url}::w{max_w}"
+    if ckey in _IMG_CACHE:
+        return _IMG_CACHE[ckey]
     try:
         r = requests.get(url, timeout=12)
         if r.status_code == 200 and r.content:
-            b64 = base64.b64encode(r.content).decode()
             mime = r.headers.get("Content-Type", "image/jpeg") or "image/jpeg"
-            data = f"data:{mime};base64,{b64}"
-            _IMG_CACHE[url] = data
+            if max_w:
+                from PIL import Image
+                im = Image.open(io.BytesIO(r.content))
+                w, h = im.size
+                if w > max_w:
+                    im = im.resize((max_w, int(h * max_w / w)), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.convert("RGB").save(buf, "JPEG", quality=80)
+                b64 = base64.b64encode(buf.getvalue()).decode()
+                data = f"data:image/jpeg;base64,{b64}"
+            else:
+                b64 = base64.b64encode(r.content).decode()
+                data = f"data:{mime};base64,{b64}"
+            _IMG_CACHE[ckey] = data
             return data
     except Exception:
         pass
@@ -547,19 +573,25 @@ def show_photo_grid(title, photos, cols=4):
             src, name = p[0], p[1]
         else:
             src, name = p, Path(p).name
-        if isinstance(src, str) and src.startswith("http"):  # 七牛 CDN URL → 后端代理拉取
-            src = _remote_to_data_url(src)
+        # 缩略图（压缩，加载快）+ 原图（点击查看高清）
+        thumb = full = None
+        if isinstance(src, str) and src.startswith("http"):  # 七牛 CDN URL → 后端代理
+            thumb = _remote_to_data_url(src, max_w=320)
+            full = _remote_to_data_url(src)
         elif isinstance(src, str) and os.path.exists(src):  # 本地文件 → 转 data URL
-            src = img_to_data_url(src)
-        if src:
-            items.append((src, name))
+            thumb = img_to_data_url(src, max_w=320)
+            full = img_to_data_url(src)
+        elif isinstance(src, str) and src.startswith("data:"):
+            thumb = full = src
+        if thumb and full:
+            items.append((thumb, full, name))
     if not items:
         st.caption("（暂无照片）")
         return
     cards = ""
-    for url, name in items:
-        cards += (f'<div class="it" onclick="openLB(\'{url}\',\'{name}\')">'
-                  f'<img src="{url}"><div class="nm">{name}</div></div>')
+    for thumb, full, name in items:
+        cards += (f'<div class="it" onclick="openLB(\'{full}\',\'{name}\')">'
+                  f'<img src="{thumb}"><div class="nm">{name}</div></div>')
     rows = (len(items) + cols - 1) // cols
     grid_h = rows * 178 + 24
     height = grid_h  # 高度随照片数量自适应，避免大片留白
